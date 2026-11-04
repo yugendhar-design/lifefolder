@@ -100,9 +100,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const signIn = async (email: string, password: string) => {
+    if (!email || !password) {
+      return { success: false, error: 'Please enter both email and password.' };
+    }
+
     if (isSupabaseConfigured && supabase) {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) return { success: false, error: error.message };
+      const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
+      if (error) {
+        if (error.message.toLowerCase().includes('invalid login credentials') || error.message.toLowerCase().includes('invalid credentials')) {
+          return { success: false, error: 'No account found with these credentials. Please check your password or create a new account.' };
+        }
+        return { success: false, error: error.message };
+      }
       if (data.user) {
         setUser({
           id: data.user.id,
@@ -115,30 +124,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    // Local authentication fallback
-    if (!email || !password) {
-      return { success: false, error: 'Please enter both email and password.' };
+    // Strict local validation (if testing without Supabase configured on server):
+    // Check if the user was actually registered via Sign Up previously
+    const existingRaw = localStorage.getItem(`lifefolder_account_${email.trim().toLowerCase()}`);
+    if (!existingRaw) {
+      return { 
+        success: false, 
+        error: 'No account found with this email. Please click "Create account" to sign up first.' 
+      };
     }
-    const localUser: UserProfile = {
-      id: 'local-vault-owner-1',
-      email: email.trim().toLowerCase(),
-      fullName: email.split('@')[0] || 'Alex Morgan',
-      role: 'Vault Owner',
-      created_at: new Date().toISOString(),
-    };
-    localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(localUser));
-    setUser(localUser);
-    return { success: true };
+
+    try {
+      const savedAccount = JSON.parse(existingRaw);
+      if (savedAccount.password !== password) {
+        return { success: false, error: 'Incorrect password. Please try again.' };
+      }
+
+      const localUser: UserProfile = {
+        id: savedAccount.id,
+        email: savedAccount.email,
+        fullName: savedAccount.fullName,
+        role: 'Vault Owner',
+        created_at: savedAccount.created_at,
+      };
+      localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(localUser));
+      setUser(localUser);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Account verification error. Please sign up again.' };
+    }
   };
 
   const signUp = async (fullName: string, email: string, password: string) => {
+    const normalizedEmail = email.trim().toLowerCase();
+
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.auth.signUp({
-        email,
+        email: normalizedEmail,
         password,
         options: {
           data: {
-            full_name: fullName,
+            full_name: fullName.trim(),
           },
         },
       });
@@ -146,8 +172,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data.session) {
         setUser({
           id: data.user!.id,
-          email: data.user!.email || email,
-          fullName: fullName,
+          email: data.user!.email || normalizedEmail,
+          fullName: fullName.trim(),
           role: 'Vault Owner',
           created_at: data.user!.created_at,
         });
@@ -155,17 +181,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       return {
         success: true,
-        message: 'Confirmation email sent. Please check your inbox to activate your account.',
+        message: 'Account registered! You can now sign in.',
       };
     }
 
-    // Local mode signup
-    const localUser: UserProfile = {
-      id: 'local-vault-owner-' + Date.now(),
-      email: email.trim().toLowerCase(),
-      fullName: fullName.trim() || 'Alex Morgan',
-      role: 'Vault Owner',
+    // Save registered user locally with their actual password
+    const newUserId = 'vault_user_' + Date.now();
+    const accountRecord = {
+      id: newUserId,
+      email: normalizedEmail,
+      fullName: fullName.trim() || 'Vault Owner',
+      password: password,
       created_at: new Date().toISOString(),
+    };
+
+    localStorage.setItem(`lifefolder_account_${normalizedEmail}`, JSON.stringify(accountRecord));
+
+    const localUser: UserProfile = {
+      id: newUserId,
+      email: normalizedEmail,
+      fullName: fullName.trim() || 'Vault Owner',
+      role: 'Vault Owner',
+      created_at: accountRecord.created_at,
     };
     localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(localUser));
     setUser(localUser);
